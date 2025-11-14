@@ -38,9 +38,6 @@ extern "C" {
 #include "xoroshiro128plus.h"
 }
 
-#ifndef RELEASE
-#include <backtrace.h>
-
 typedef struct {
   char* head;
   char* page;
@@ -53,6 +50,9 @@ void* sk_get_exception_message(void* skExn);
 sk_saved_obstack_t* SKIP_new_Obstack();
 void SKIP_destroy_Obstack(sk_saved_obstack_t* saved);
 }
+
+#ifndef RELEASE
+#include <backtrace.h>
 
 namespace {
 
@@ -143,6 +143,22 @@ void terminate() {
   }
   std::cerr << "*** Stack trace:" << std::endl;
   skip::printStackTrace();
+}
+}  // namespace
+#else
+namespace {
+void terminate() {
+  try {
+    std::exception_ptr eptr = std::current_exception();
+    if (eptr) {
+      std::rethrow_exception(eptr);
+    }
+  } catch (skip::SkipException& e) {
+    std::cerr << "*** Uncaught exception of type " << e.name() << ": "
+              << e.what() << std::endl;
+  } catch (std::exception& e) {
+    std::cerr << "*** Uncaught exception: " << e.what() << std::endl;
+  }
 }
 }  // namespace
 #endif

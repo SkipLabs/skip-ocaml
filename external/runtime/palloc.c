@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +16,12 @@
 #include <unistd.h>
 
 #include "runtime.h"
+#include <stdarg.h>
+
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 
 #define DEFAULT_CAPACITY (1024L * 1024L * 1024L * 16L)
 #define BOTTOM_ADDR ((void*)0x0000001000000000)
@@ -68,6 +75,58 @@ typedef struct ginfo {
 } ginfo_t;
 
 ginfo_t* ginfo = NULL;
+
+/*****************************************************************************/
+/* Debug logging helpers. */
+/*****************************************************************************/
+
+static int sk_palloc_debug_enabled = -1;
+
+static int sk_palloc_should_debug(void) {
+  if (sk_palloc_debug_enabled == -1) {
+    const char* flag = getenv("SKIP_PALLOC_DEBUG");
+    sk_palloc_debug_enabled = (flag != NULL && flag[0] != '\0');
+  }
+  return sk_palloc_debug_enabled;
+}
+
+static void sk_palloc_log(const char* fmt, ...) {
+  if (!sk_palloc_should_debug()) {
+    return;
+  }
+  va_list args;
+  va_start(args, fmt);
+  fprintf(stderr, "[palloc] ");
+  vfprintf(stderr, fmt, args);
+  fprintf(stderr, "\n");
+  va_end(args);
+}
+
+/*****************************************************************************/
+/* Alignment helpers. */
+/*****************************************************************************/
+
+static size_t sk_align_up(size_t value, size_t alignment) {
+  return (value + alignment - 1) & ~(alignment - 1);
+}
+
+#ifdef __APPLE__
+static void macos_reserve_address(void* base, size_t size) {
+  mach_vm_address_t target = (mach_vm_address_t)base;
+  kern_return_t kr = mach_vm_allocate(mach_task_self(), &target,
+                                      (mach_vm_size_t)size,
+                                      VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE);
+  if (kr != KERN_SUCCESS || target != (mach_vm_address_t)base) {
+    fprintf(stderr, "mach_vm_allocate failed: %s\n", mach_error_string(kr));
+    exit(ERROR_MAPPING_FAILED);
+  }
+}
+
+static void macos_release_address(void* base, size_t size) {
+  mach_vm_deallocate(mach_task_self(), (mach_vm_address_t)base,
+                     (mach_vm_size_t)size);
+}
+#endif
 
 /*****************************************************************************/
 /* Global locking. */
@@ -471,7 +530,16 @@ void sk_create_mapping(char* fileName, size_t icapacity, int show) {
     int fd = open(fileName, O_RDWR | O_CREAT, 0600);
     lseek(fd, icapacity, SEEK_SET);
     (void)write(fd, "", 1);
-    mapping = mmap(BOTTOM_ADDR, icapacity, prot, MAP_SHARED | MAP_FIXED, fd, 0);
+    void* target = BOTTOM_ADDR;
+#ifdef __APPLE__
+    macos_reserve_address(target, icapacity);
+#endif
+    mapping = mmap(target, icapacity, prot, MAP_SHARED | MAP_FIXED, fd, 0);
+    if (mapping == MAP_FAILED) {
+#ifdef __APPLE__
+      macos_release_address(target, icapacity);
+#endif
+    }
     close(fd);
   }
 
@@ -561,11 +629,18 @@ void sk_load_mapping(char* fileName) {
 
   size_t fsize = lseek(fd, 0, SEEK_END) - 1;
   int prot = PROT_READ | PROT_WRITE;
+  void* target = header.bottom_addr;
+#ifdef __APPLE__
+  macos_reserve_address(target, fsize);
+#endif
   file_mapping_t* mapping =
-      mmap(header.bottom_addr, fsize, prot, MAP_SHARED | MAP_FIXED, fd, 0);
+      mmap(target, fsize, prot, MAP_SHARED | MAP_FIXED, fd, 0);
   close(fd);
 
   if (mapping == MAP_FAILED) {
+#ifdef __APPLE__
+    macos_release_address(target, fsize);
+#endif
     perror("ERROR (MAP FAILED)");
     exit(ERROR_MAPPING_FAILED);
   }
@@ -637,29 +712,20 @@ typedef struct {
   ginfo_t ginfo_data;
   uint64_t gid;
   void** pconsts;
+  size_t capacity_value;
+  char* heap_base;
+  size_t heap_size;
 } no_file_t;
-
-#ifdef __APPLE__
-static void sk_init_no_file() {
-  no_file_t* no_file = malloc(sizeof(no_file_t));
-  if (no_file == NULL) {
-    perror("malloc");
-    exit(1);
-  }
-  ginfo = &no_file->ginfo_data;
-  ginfo->total_palloc_size = 0;
-  ginfo->fileName = NULL;
-  ginfo->context = NULL;
-  gmutex = NULL;
-  gid = &no_file->gid;
-  pconsts = &no_file->pconsts;
-  *gid = 1;
-  *pconsts = NULL;
-}
-#endif
 
 int sk_is_nofile_mode() {
   return (ginfo->fileName == NULL);
+}
+
+size_t sk_current_capacity(void) {
+  if (capacity == NULL) {
+    return 0;
+  }
+  return *capacity;
 }
 
 /*****************************************************************************/
@@ -677,19 +743,6 @@ void SKIP_memory_init(int argc, char** argv) {
   int is_create = 0;
   char* fileName = parse_args(argc, argv, &is_create);
 
-#ifdef __APPLE__
-  if (fileName != NULL) {
-    fprintf(stderr,
-            "Persistent allocation not supported on this platform. "
-            "Disregarding %s.\n",
-            fileName);
-  }
-  if (is_create) {
-    exit(EXIT_SUCCESS);
-  }
-  sk_init_no_file();
-
-#else   // __APPLE__
   if (is_create || fileName == NULL) {
     size_t capacity = DEFAULT_CAPACITY;
     capacity = parse_capacity(argc, argv);
@@ -697,7 +750,6 @@ void SKIP_memory_init(int argc, char** argv) {
   } else {
     sk_load_mapping(fileName);
   }
-#endif  // __APPLE__
 
   sk_init_external_pointers();
 }
@@ -712,19 +764,41 @@ void SKIP_print_persistent_size() {
 
 void* sk_palloc(size_t size) {
   sk_check_has_lock();
+  size_t requested = size;
   slot_t slot = sk_slot_of_size(size);
   size = sk_size_of_slot(slot);
+
+  if (sk_palloc_should_debug()) {
+    sk_palloc_log(
+        "alloc request=%zu aligned=%zu slot=%zu head=%p end=%p total_before=%zu",
+        requested, size, (size_t)slot, ginfo->head, ginfo->end,
+        ginfo->total_palloc_size);
+  }
+
   ginfo->total_palloc_size += size;
   sk_cell_t* ptr = sk_get_ftable(slot);
   if (ptr != NULL) {
+    if (sk_palloc_should_debug()) {
+      sk_palloc_log("alloc reuse slot=%zu ptr=%p total_after=%zu",
+                    (size_t)slot, ptr, ginfo->total_palloc_size);
+    }
     return ptr;
   }
   if (ginfo->head + size >= ginfo->end) {
+    sk_palloc_log("allocation failure: request=%zu aligned=%zu head=%p end=%p "
+                  "total=%zu capacity=%zu",
+                  requested, size, ginfo->head, ginfo->end,
+                  ginfo->total_palloc_size,
+                  capacity != NULL ? *capacity : 0);
     fprintf(stderr, "Error: out of persistent memory.\n");
     exit(ERROR_OUT_OF_MEMORY);
   }
   void* result = ginfo->head;
   ginfo->head += size;
+  if (sk_palloc_should_debug()) {
+    sk_palloc_log("alloc new ptr=%p new_head=%p total_after=%zu", result,
+                  ginfo->head, ginfo->total_palloc_size);
+  }
   return result;
 }
 
@@ -733,5 +807,9 @@ void sk_pfree_size(void* chunk, size_t size) {
   slot_t slot = sk_slot_of_size(size);
   size = sk_size_of_slot(slot);
   ginfo->total_palloc_size -= size;
+  if (sk_palloc_should_debug()) {
+    sk_palloc_log("pfree ptr=%p size=%zu slot=%zu total_after=%zu", chunk, size,
+                  (size_t)slot, ginfo->total_palloc_size);
+  }
   sk_add_ftable(chunk, slot);
 }

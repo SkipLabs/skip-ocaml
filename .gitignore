@@ -7,3 +7,15 @@ main
 *.txt
 *.rheap
 
+# macOS persistent-memory experiments
+macos_persistent_memory/*.bin
+macos_persistent_memory/tests/basic_map
+macos_persistent_memory/tests/client_fixed_map
+macos_persistent_memory/tests/crash_writer
+macos_persistent_memory/tests/crash_verifier
+macos_persistent_memory/tests/fork_share
+macos_persistent_memory/tests/paging_stress
+macos_persistent_memory/tests/racing_clients
+macos_persistent_memory/tests/reservation_daemon
+macos_persistent_memory/tests/sigbus_test
+

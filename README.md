@@ -32,7 +32,7 @@ Reactive includes a custom runtime and linking requirements that are necessary t
 
 ### Build Instructions
 
-After cloning the repository and running `make`, you can link your own OCaml program as follows:
+After cloning the repository and running `make`, you can link your own OCaml program as follows (Linux example shown — see the note below for macOS):
 
 ```sh
 ocamlopt -g -o my_program \
@@ -47,13 +47,13 @@ ocamlopt -g -o my_program \
   -ccopt -Wl,-Ttext=0x8000000
 ```
 
-### Required Linker Options
+### Required Linker Options (Linux)
 
-* `-ccopt -no-pie`
-  Disables position-independent execution. This is required so that function pointers remain stable across program runs.
+* `-ccopt -no-pie`  
+  Disables position-independent execution so that function pointers remain stable across runs.
 
-* `-ccopt -Wl,-Ttext=0x8000000`
-  Places all OCaml code in a fixed virtual memory location (here `0x8000000`). This allows code pointers to remain consistent across executions — a critical requirement for the caching mechanism to work correctly.
+* `-ccopt -Wl,-Ttext=0x8000000`  
+  Places all OCaml code at a fixed virtual address, which is critical for cache stability.
 
 * `-cclib -lstdc++`
   Required because the runtime includes C++ components.
@@ -66,6 +66,7 @@ ocamlopt -g -o my_program \
 
 ### Notes
 
+* macOS builds are fully supported. The provided Makefile handles Mach-based fixed mappings automatically, so you can omit the Linux-only linker flags (`-no-pie`, `-Wl,-Ttext=…`) when linking your own binaries on macOS.
 * Your OCaml program must be compiled with `ocamlopt`. Bytecode mode is not supported.
 * Only single-threaded programs are supported for now. The Reactive system relies on `fork()` internally and is not compatible with OCaml's multicore runtime.
 * All reactive code must use the provided APIs. Direct access to files, time, network, or non-deterministic sources must be avoided.

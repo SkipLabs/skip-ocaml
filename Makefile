@@ -24,7 +24,7 @@ TARGET := build/main
 EXT_LIBS := external/libbacktrace.a
 
 # Conditionally add -DOCAML5
-CFLAGS := -O2 -g -I$(OCAML_LIB_DIR) -Isrc/c -DSKIP64 -Wno-c2x-extensions -Wno-extern-c-compat
+CFLAGS := -O2 -g -I$(OCAML_LIB_DIR) -Isrc/c -Iexternal/runtime -DSKIP64 -Wno-c2x-extensions -Wno-extern-c-compat -DRELEASE
 ifeq ($(shell [ $(OCAML_MAJOR) -ge 5 ] && echo yes),yes)
 CFLAGS += -DOCAML5
 endif
@@ -37,10 +37,19 @@ all: $(TARGET)
 $(shell mkdir -p build)
 
 # Final binary: link cmxa, static lib, and explicitly -lstdc++
+# Platform-specific linker flags
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+  # macOS: skip position-independent code restrictions (may affect caching)
+  LINK_FLAGS := -cclib -lstdc++ -I +unix
+else
+  # Linux: use fixed text segment for code pointer stability
+  LINK_FLAGS := -cclib -lstdc++ -I +unix -ccopt -no-pie -ccopt -Wl,-Ttext=0x8000000
+endif
+
 $(TARGET): $(CMXA) $(STATIC_LIB) src/main.ml
 	ocamlopt -g -o $@ -I build unix.cmxa reactive.cmxa src/main.ml\
-            $(STATIC_LIB) -cclib -lstdc++ -I +unix\
-            -ccopt -no-pie -ccopt -Wl,-Ttext=0x8000000
+            $(STATIC_LIB) $(LINK_FLAGS)
 
 # OCaml static archive
 $(CMXA): build/reactive.cmx
@@ -68,7 +77,13 @@ build/%.o: src/c/%.cpp
 # Special rule for stripping 'main' from runtime64_specific.o
 build/runtime_runtime64_specific.o: $(RUNTIME_SRC_DIR)/runtime64_specific.cpp
 	clang++ -g -c $(CFLAGS) $< -o $@
-	objcopy --strip-symbol=main $@
+	@if command -v objcopy >/dev/null 2>&1; then \
+		objcopy --strip-symbol=main $@; \
+	elif command -v llvm-objcopy >/dev/null 2>&1; then \
+		llvm-objcopy --strip-symbol=main $@; \
+	else \
+		echo "Warning: objcopy not found, skipping symbol stripping"; \
+	fi
 
 # Compile LLVM to object
 $(SKIP_OBJ): $(SKIP_LL)
@@ -94,8 +109,7 @@ tests: $(TEST_BINS)
 
 build/%: $(TEST_SRC_DIR)/%.ml $(CMXA) $(STATIC_LIB)
 	ocamlopt -g -o $@ -I build unix.cmxa reactive.cmxa $<\
-		$(STATIC_LIB) -cclib -lstdc++ -I +unix\
-		-ccopt -no-pie -ccopt -Wl,-Ttext=0x8000000\
+		$(STATIC_LIB) $(LINK_FLAGS)\
 
 clean:
 	rm -Rf build/

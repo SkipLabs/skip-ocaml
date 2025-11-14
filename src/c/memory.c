@@ -1,6 +1,7 @@
 // memory.c
 #include "memory.h"
 #include "interop.h"
+#include "runtime.h"
 #include <caml/fail.h>
 #include <caml/memory.h>
 #include <caml/address_class.h>
@@ -28,7 +29,6 @@ extern void sk_global_lock();
 extern void sk_global_unlock();
 extern void sk_init_external_pointers();
 extern void* SKIP_intern_shared(void* ptr);
-extern void sk_free_root(void* ptr);
 extern void sk_skip_set_init_mode();
 extern void sk_pfree_size(void*, size_t);
 
@@ -100,10 +100,11 @@ value init_memory(value size_val, value fileName_val) {
 
   long size = Long_val(size_val);
   const char* filename = String_val(fileName_val);
+  
   long page_size = sysconf(_SC_PAGESIZE);
   size = (size + page_size - 1) & ~(page_size - 1);
 
-  FILE *file = fopen(filename, "rw");
+  FILE *file = fopen(filename, "r");
   if (file) {
     fclose(file);
     sk_load_mapping((char*)filename);
@@ -120,7 +121,11 @@ value init_memory(value size_val, value fileName_val) {
 
   sk_init_external_pointers();
 
-  skip_heap_size = size;
+  size_t capacity_bytes = sk_current_capacity();
+  if (capacity_bytes == 0) {
+    capacity_bytes = (size_t)size;
+  }
+  skip_heap_size = capacity_bytes;
 #ifndef OCAML5
   caml_page_table_add(In_static_data, skip_heap, skip_heap + skip_heap_size);
 #endif
