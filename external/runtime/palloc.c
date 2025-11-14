@@ -20,11 +20,23 @@
 
 #ifdef __APPLE__
 #include <mach/mach.h>
+#include <mach/mach_error.h>
 #include <mach/mach_vm.h>
 #endif
 
+
 #define DEFAULT_CAPACITY (1024L * 1024L * 1024L * 16L)
-#define BOTTOM_ADDR ((void*)0x0000001000000000)
+#ifdef __APPLE__
+#define BOTTOM_ADDR ((void*)0x0000000300000000ULL)
+#else
+#define BOTTOM_ADDR ((void*)0x0000001000000000ULL)
+#endif
+
+static char* heap_base = NULL;
+
+char* SKIP_get_heap_base(void) {
+  return heap_base;
+}
 #define FTABLE_SIZE 64
 
 /*****************************************************************************/
@@ -111,22 +123,37 @@ static size_t sk_align_up(size_t value, size_t alignment) {
 }
 
 #ifdef __APPLE__
-static void macos_reserve_address(void* base, size_t size) {
-  mach_vm_address_t target = (mach_vm_address_t)base;
-  kern_return_t kr = mach_vm_allocate(mach_task_self(), &target,
-                                      (mach_vm_size_t)size,
-                                      VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE);
-  if (kr != KERN_SUCCESS || target != (mach_vm_address_t)base) {
-    fprintf(stderr, "mach_vm_allocate failed: %s\n", mach_error_string(kr));
-    exit(ERROR_MAPPING_FAILED);
-  }
+extern void* __dso_handle;
+
+static uintptr_t sk_current_image_base(void) {
+  return (uintptr_t)__dso_handle;
 }
 
-static void macos_release_address(void* base, size_t size) {
-  mach_vm_deallocate(mach_task_self(), (mach_vm_address_t)base,
-                     (mach_vm_size_t)size);
+static void* macos_reserve_address(void* desired, size_t size) {
+  mach_vm_address_t addr = (mach_vm_address_t)desired;
+  kern_return_t kr = mach_vm_allocate(
+      mach_task_self(), &addr, size, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE);
+  if (kr != KERN_SUCCESS || addr != (mach_vm_address_t)desired) {
+    sk_palloc_log(
+        "macos_reserve_address failed for %p (%zu bytes): %s",
+        desired,
+        size,
+        mach_error_string(kr));
+    return NULL;
+  }
+  sk_palloc_log("macos_reserve_address: reserved %p (%zu bytes)", desired, size);
+  return (void*)addr;
+}
+
+static void macos_release_address(void* addr, size_t size) {
+  if (addr == NULL || size == 0) {
+    return;
+  }
+  mach_vm_deallocate(mach_task_self(), (mach_vm_address_t)addr, size);
+  sk_palloc_log("macos_release_address: released %p (%zu bytes)", addr, size);
 }
 #endif
+
 
 /*****************************************************************************/
 /* Global locking. */
@@ -483,11 +510,11 @@ void sk_commit(char* new_root, uint32_t sync) {
 
   __sync_synchronize();
   if (sync) {
-    msync(BOTTOM_ADDR, *capacity, MS_SYNC);
+    msync(heap_base, *capacity, MS_SYNC);
   }
   sk_context_set_unsafe(new_root);
   if (sync) {
-    msync(BOTTOM_ADDR, *capacity, MS_SYNC);
+    msync(heap_base, *capacity, MS_SYNC);
   }
 }
 
@@ -500,6 +527,9 @@ typedef struct file_mapping file_mapping_t;
 typedef struct {
   int64_t version;
   file_mapping_t* bottom_addr;
+#ifdef __APPLE__
+  uintptr_t image_base;
+#endif
 } file_mapping_header_t;
 
 struct file_mapping {
@@ -518,38 +548,65 @@ struct file_mapping {
 /*****************************************************************************/
 
 void sk_create_mapping(char* fileName, size_t icapacity, int show) {
+  sk_palloc_log(
+      "sk_create_mapping: file=%s size=%zu",
+      (fileName != NULL) ? fileName : "(null)",
+      icapacity);
   if (fileName != NULL && access(fileName, F_OK) == 0) {
     fprintf(stderr, "ERROR: File %s already exists!\n", fileName);
     exit(ERROR_MAPPING_EXISTS);
   }
   file_mapping_t* mapping;
   int prot = PROT_READ | PROT_WRITE;
+#ifdef __APPLE__
+  void* target = macos_reserve_address(BOTTOM_ADDR, icapacity);
+  if (target == NULL) {
+    fprintf(stderr, "ERROR: could not reserve persistent heap at %p\n", BOTTOM_ADDR);
+    exit(ERROR_MAPPING_FAILED);
+  }
+#endif
   if (fileName == NULL) {
+#ifdef __APPLE__
+    mapping = mmap(target, icapacity, prot, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    sk_palloc_log("sk_create_mapping: anon mmap returned %p", mapping);
+#else
     mapping = mmap(NULL, icapacity, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+#endif
   } else {
     int fd = open(fileName, O_RDWR | O_CREAT, 0600);
     lseek(fd, icapacity, SEEK_SET);
     (void)write(fd, "", 1);
-    void* target = BOTTOM_ADDR;
 #ifdef __APPLE__
-    macos_reserve_address(target, icapacity);
-#endif
+    sk_palloc_log("sk_create_mapping: macOS mmap size=%zu", icapacity);
     mapping = mmap(target, icapacity, prot, MAP_SHARED | MAP_FIXED, fd, 0);
-    if (mapping == MAP_FAILED) {
-#ifdef __APPLE__
-      macos_release_address(target, icapacity);
+    sk_palloc_log("sk_create_mapping: mmap returned %p", mapping);
+#else
+    mapping = mmap(BOTTOM_ADDR, icapacity, prot, MAP_SHARED | MAP_FIXED, fd, 0);
 #endif
-    }
     close(fd);
   }
 
   if (mapping == MAP_FAILED) {
+#ifdef __APPLE__
+    macos_release_address(target, icapacity);
+#endif
     perror("ERROR (MAP FAILED)");
+    fprintf(
+        stderr,
+        "[palloc] mmap failed for file=%s size=%zu errno=%d\n",
+        (fileName != NULL) ? fileName : "(null)",
+        icapacity,
+        errno);
     exit(ERROR_MAPPING_FAILED);
   }
 
+  heap_base = (char*)mapping;
+
   mapping->header.version = SKIP_get_version();
   mapping->header.bottom_addr = mapping;
+#ifdef __APPLE__
+  mapping->header.image_base = sk_current_image_base();
+#endif
 
   gmutex_attr = &mapping->gmutex_attr;
   gmutex = &mapping->gmutex;
@@ -605,7 +662,7 @@ void sk_create_mapping(char* fileName, size_t icapacity, int show) {
 /* Loads an existing mapping. */
 /*****************************************************************************/
 
-void sk_load_mapping(char* fileName) {
+int sk_load_mapping(char* fileName) {
   int fd = open(fileName, O_RDWR, 0600);
 
   if (fd == -1) {
@@ -629,12 +686,36 @@ void sk_load_mapping(char* fileName) {
 
   size_t fsize = lseek(fd, 0, SEEK_END) - 1;
   int prot = PROT_READ | PROT_WRITE;
-  void* target = header.bottom_addr;
 #ifdef __APPLE__
-  macos_reserve_address(target, fsize);
-#endif
+  uintptr_t current_image_base = sk_current_image_base();
+  if (header.image_base != current_image_base) {
+    sk_palloc_log(
+        "sk_load_mapping: image base mismatch (file=%p current=%p) for %s",
+        (void*)header.image_base,
+        (void*)current_image_base,
+        fileName);
+    close(fd);
+    return 0;
+  }
+  void* target = header.bottom_addr;
+  sk_palloc_log(
+      "sk_load_mapping: reserving %p (%zu bytes) for %s",
+      target,
+      fsize,
+      fileName);
+  void* reserved = macos_reserve_address(target, fsize);
+  if (reserved == NULL) {
+    fprintf(stderr, "ERROR: could not reserve heap at %p (size %zu)\n", target, fsize);
+    exit(ERROR_MAPPING_FAILED);
+  }
   file_mapping_t* mapping =
       mmap(target, fsize, prot, MAP_SHARED | MAP_FIXED, fd, 0);
+  sk_palloc_log("sk_load_mapping: mmap returned %p", mapping);
+#else
+  void* target = header.bottom_addr;
+  file_mapping_t* mapping =
+      mmap(target, fsize, prot, MAP_SHARED | MAP_FIXED, fd, 0);
+#endif
   close(fd);
 
   if (mapping == MAP_FAILED) {
@@ -645,11 +726,19 @@ void sk_load_mapping(char* fileName) {
     exit(ERROR_MAPPING_FAILED);
   }
 
+  heap_base = (char*)mapping;
+
   gmutex = &mapping->gmutex;
   ginfo = &mapping->ginfo_data;
   gid = &mapping->gid;
   capacity = &mapping->capacity;
   pconsts = &mapping->pconsts;
+#ifdef __APPLE__
+  sk_palloc_log("sk_load_mapping: completed for %s", fileName);
+#else
+  (void)fileName;
+#endif
+  return 1;
 }
 
 /*****************************************************************************/

@@ -66,7 +66,9 @@ ocamlopt -g -o my_program \
 
 ### Notes
 
-* macOS builds are fully supported. The provided Makefile handles Mach-based fixed mappings automatically, so you can omit the Linux-only linker flags (`-no-pie`, `-Wl,-Ttext=…`) when linking your own binaries on macOS.
+* macOS builds are fully supported. The provided Makefile handles Mach-based fixed mappings automatically, so you can omit the Linux-only linker flags (`-no-pie`, `-Wl,-Ttext=…`) when linking your own binaries on macOS.  
+  **However**, macOS enforces PIE + ASLR, so the text segment is relocated every time the process starts. Persistent heaps (`.rheap`) therefore **cannot be reused across separate executions**: if you rerun a binary without deleting its `.rheap`, the runtime will fail immediately and ask you to remove the stale file. Within a single process tree (the original process plus its `fork()` children) everything works as usual.
+* `run_tests.sh` reflects this behaviour: by default it deletes all `.rheap` files *after* the test suite finishes, so each run starts cleanly the next time. Pass `--keep-rheaps` only when you explicitly need to inspect the heaps yourself.
 * Your OCaml program must be compiled with `ocamlopt`. Bytecode mode is not supported.
 * Only single-threaded programs are supported for now. The Reactive system relies on `fork()` internally and is not compatible with OCaml's multicore runtime.
 * All reactive code must use the provided APIs. Direct access to files, time, network, or non-deterministic sources must be avoided.

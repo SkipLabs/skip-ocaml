@@ -77,6 +77,7 @@ void sk_print_ctx_table();
 #define ERROR_ARG_PARSE 103
 
 size_t sk_current_capacity(void);
+char* SKIP_get_heap_base(void);
 
 /*****************************************************************************/
 /* Types used for the Obstack pages. */

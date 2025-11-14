@@ -24,7 +24,7 @@ TARGET := build/main
 EXT_LIBS := external/libbacktrace.a
 
 # Conditionally add -DOCAML5
-CFLAGS := -O2 -g -I$(OCAML_LIB_DIR) -Isrc/c -Iexternal/runtime -DSKIP64 -Wno-c2x-extensions -Wno-extern-c-compat -DRELEASE
+CFLAGS := -O2 -g -I$(OCAML_LIB_DIR) -Isrc/c -Iexternal/runtime -DSKIP64 -Wno-c2x-extensions -Wno-extern-c-compat -DRELEASE -DSKIP_NO_MAIN
 ifeq ($(shell [ $(OCAML_MAJOR) -ge 5 ] && echo yes),yes)
 CFLAGS += -DOCAML5
 endif

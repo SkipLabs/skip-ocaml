@@ -13,13 +13,13 @@
 #include <stdlib.h>
 #include <caml/callback.h>
 
-char* skip_heap = ((void*)0x0000001000000000);
+char* skip_heap = NULL;
 size_t skip_heap_size = 0;
 int64_t is_init = 1;
 
 static struct sigaction old_segv_action;
 extern void* sk_create_mapping(char*, size_t, int);
-extern void* sk_load_mapping(char*);
+extern int sk_load_mapping(char*);
 extern char* SKIP_new_Obstack();
 extern void SKIP_destroy_Obstack(char*);
 extern void SKIP_initializeSkip();
@@ -107,8 +107,15 @@ value init_memory(value size_val, value fileName_val) {
   FILE *file = fopen(filename, "r");
   if (file) {
     fclose(file);
-    sk_load_mapping((char*)filename);
-    is_init = 0;
+    if (sk_load_mapping((char*)filename)) {
+      is_init = 0;
+    } else {
+      fprintf(stderr,
+              "Error: persistent heap '%s' is incompatible with this binary. "
+              "Please delete the .rheap file and rerun.\n",
+              filename);
+      exit(ERROR_MAPPING_VERSION);
+    }
   }
   else {
     sk_skip_set_init_mode();
@@ -120,6 +127,7 @@ value init_memory(value size_val, value fileName_val) {
   }
 
   sk_init_external_pointers();
+  skip_heap = SKIP_get_heap_base();
 
   size_t capacity_bytes = sk_current_capacity();
   if (capacity_bytes == 0) {
