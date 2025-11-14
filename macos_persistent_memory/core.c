@@ -6,6 +6,18 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#ifdef __APPLE__
+extern void* __dso_handle;
+#endif
+
+uintptr_t pmem_current_image_base(void) {
+#ifdef __APPLE__
+  return (uintptr_t)__dso_handle;
+#else
+  return 0;
+#endif
+}
+
 int pmem_prepare_file(const char* path, size_t size, int extra_flags) {
   int flags = O_RDWR | extra_flags;
   int fd = open(path, flags, 0600);

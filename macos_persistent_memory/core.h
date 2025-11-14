@@ -18,6 +18,7 @@ typedef struct {
   mach_vm_address_t target;
 } pmem_mapping;
 
+uintptr_t pmem_current_image_base(void);
 int pmem_prepare_file(const char* path, size_t size, int extra_flags);
 int pmem_map_file_flags(int fd, size_t size, mach_vm_address_t target, int prot,
                         int map_flags, vm_flags_t vm_flags,

@@ -9,6 +9,11 @@
 
 static const mach_vm_address_t kTarget = 0x331000000ULL;
 
+typedef struct {
+  uintptr_t image_base;
+  uint64_t value;
+} shared_record_t;
+
 int main(void) {
   const char* path = "macos_persistent_memory/fork_share.bin";
   const size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
@@ -28,9 +33,10 @@ int main(void) {
     return 1;
   }
 
-  uint64_t* ptr = (uint64_t*)mapping.addr;
-  ptr[0] = 0xAAAAAAAAAAAAAAAAULL;
-  msync(ptr, sizeof(uint64_t), MS_SYNC);
+  shared_record_t* record = (shared_record_t*)mapping.addr;
+  record->image_base = pmem_current_image_base();
+  record->value = 0xAAAAAAAAAAAAAAAAULL;
+  msync(record, sizeof(*record), MS_SYNC);
 
   pid_t pid = fork();
   if (pid == -1) {
@@ -41,10 +47,10 @@ int main(void) {
   }
 
   if (pid == 0) {
-    printf("[child] initial=0x%llx\n", (unsigned long long)ptr[0]);
-    ptr[0] = 0xBBBBBBBBBBBBBBBBULL;
-    msync(ptr, sizeof(uint64_t), MS_SYNC);
-    printf("[child] wrote=0x%llx\n", (unsigned long long)ptr[0]);
+    printf("[child] initial=0x%llx\n", (unsigned long long)record->value);
+    record->value = 0xBBBBBBBBBBBBBBBBULL;
+    msync(&record->value, sizeof(uint64_t), MS_SYNC);
+    printf("[child] wrote=0x%llx\n", (unsigned long long)record->value);
     _exit(0);
   }
 
@@ -55,17 +61,50 @@ int main(void) {
     return 1;
   }
 
-  printf("[parent] after child=0x%llx\n", (unsigned long long)ptr[0]);
-  ptr[0] = 0xCCCCCCCCCCCCCCCCULL;
-  msync(ptr, sizeof(uint64_t), MS_SYNC);
+  printf("[parent] after child=0x%llx\n",
+         (unsigned long long)record->value);
+  record->value = 0xCCCCCCCCCCCCCCCCULL;
+  msync(&record->value, sizeof(uint64_t), MS_SYNC);
 
   pmem_unmap(&mapping);
   close(fd);
+
   fd = open(path, O_RDONLY);
-  uint64_t disk_value = 0;
-  read(fd, &disk_value, sizeof(disk_value));
+  shared_record_t disk_record = {0};
+  read(fd, &disk_record, sizeof(disk_record));
   close(fd);
-  printf("[parent] disk value=0x%llx\n", (unsigned long long)disk_value);
-  return disk_value == 0xCCCCCCCCCCCCCCCCULL ? 0 : 1;
+  printf("[parent] disk value=0x%llx\n",
+         (unsigned long long)disk_record.value);
+  if (disk_record.value != 0xCCCCCCCCCCCCCCCCULL) {
+    return 1;
+  }
+
+  uintptr_t current_base = pmem_current_image_base();
+  if (disk_record.image_base != current_base) {
+    fprintf(stderr, "Unexpected image-base mismatch after fork\n");
+    return 1;
+  }
+
+  /* Tamper with the stored base to emulate a different executable trying to
+     reuse the heap. */
+  fd = open(path, O_RDWR);
+  if (fd == -1) {
+    perror("open for tamper");
+    return 1;
+  }
+  disk_record.image_base ^= 0x4000ULL;
+  if (lseek(fd, 0, SEEK_SET) == -1 ||
+      write(fd, &disk_record, sizeof(disk_record)) !=
+          (ssize_t)sizeof(disk_record)) {
+    perror("tamper write");
+    close(fd);
+    return 1;
+  }
+  close(fd);
+
+  printf("[parent] stored image base tampered (file=%p current=%p)\n",
+         (void*)disk_record.image_base, (void*)current_base);
+  printf("[parent] a fresh executable should now refuse to map this heap\n");
+  return 0;
 }
 

@@ -28,6 +28,9 @@ attempting a full integration.
     page faults, eviction, and msync on macOS.
   - `sigbus_test.c` – intentionally invalidates a mapping (truncates the backing
     file) to observe whether macOS delivers `SIGBUS` like Linux.
+  - `image_base_guard.c` – records the PIE image base in the file header and
+    proves that we must refuse to reuse a heap when the stored base doesn’t
+    match the running executable.
 
 ## Building
 
@@ -61,6 +64,31 @@ clang macos_persistent_memory/core.c \
 
 Use `SKIP_PALLOC_DEBUG=1` with the main runtime to mirror this logging style
 during integration.
+
+## Handling PIE / ASLR on macOS
+
+macOS always launches user binaries as PIE with ASLR enabled, which means the
+text segment can move to a new base address every time a fresh process starts.
+If you mmap a persistent heap that contains direct function pointers (like Skip
+does) you **must** ensure the heap is only reused by processes that share the
+same text image.
+
+Lessons that came out of integrating these experiments into the real runtime:
+
+1. Reserve the desired heap range with `vm_flags` that include
+   `VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE` before calling `mmap`. All of the test
+   programs already do this via `pmem_map_file[_flags]`.
+2. Persist the current text base (`__dso_handle` on macOS) alongside the heap
+   metadata and refuse to reuse the heap if it does not match. `core.c` now
+   exposes `pmem_current_image_base()` as a convenience for storing that value
+   in your own headers.
+3. Heaps can be safely reused by forked children (they inherit the same image
+   base) but **not** by unrelated executables unless you explicitly disable
+   ASLR, which isn’t viable for production deployments.
+
+Future projects that reuse this directory should record the image base inside
+their headers and treat any mismatch as a hard error, mirroring the behavior in
+`skip-ocaml`.
 
 ## Next Steps
 
