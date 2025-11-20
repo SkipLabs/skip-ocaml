@@ -1,0 +1,9 @@
+(library
+ (name reactive)
+ (public_name reactive)
+ (modules reactive)
+ (libraries unix)
+ (foreign_archives ../../build/skip_reactive)
+ (c_library_flags -lstdc++)
+ (flags (:standard -w -27-32))
+)
