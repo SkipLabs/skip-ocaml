@@ -12,5 +12,10 @@ val map : 'a t -> (key -> 'a array -> (key * 'b array) array) -> 'b t
 val marshalled_map : 'a t -> (key -> 'a array -> (key * 'b array) array) -> 'b marshalled t
 val unmarshal : 'a marshalled -> 'a
 val get_array : 'a t -> key -> 'a array
+val dynamic_get_array : 'a t -> key -> 'a array
+val unsafe_get_array : 'a t -> key -> 'a array
 val union : 'a t -> 'a t -> 'a t
 val exit : unit -> unit
+val new_global : 'a -> 'a t
+val get_global : 'a t -> 'a
+

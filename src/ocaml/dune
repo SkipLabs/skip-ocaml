@@ -5,5 +5,5 @@
  (libraries unix)
  (foreign_archives ../../build/skip_reactive)
  (c_library_flags -lstdc++)
- (flags (:standard -w -27-32))
+ (flags (:standard -w -27-32 -ccopt -no-pie -ccopt -Wl,-Ttext=0x8000000))
 )

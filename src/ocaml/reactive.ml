@@ -53,6 +53,7 @@ external skip_get_files : string -> string array
 
 exception Memory_write_violation
 
+let filename = ref ""
 let has_exited = ref false
 let toplevel = ref true
 let has_been_initialized = ref false
@@ -61,6 +62,7 @@ let init file_name dataSize =
   has_been_initialized := true;
   Callback.register_exception "memory_write_violation" Memory_write_violation;
   init_memory dataSize file_name;
+  filename := file_name;
   ()
 
 (* For debugging purposes only *)
@@ -257,6 +259,18 @@ let get_array collection key =
   then raise Toplevel_get_array
   else skip_get_array collection key
 
+let unsafe_get_array collection key =
+  if not !has_been_initialized
+  then failwith "Reactive has not been initialized";
+  skip_unsafe_get_array collection key
+
+let dynamic_get_array collection key =
+  if not !has_been_initialized
+  then failwith "Reactive has not been initialized";
+  if !has_exited || !toplevel
+  then skip_unsafe_get_array collection key
+  else skip_get_array collection key
+
 let union col1 col2 =
   if !has_exited
   then failwith "Reactive has exited";
@@ -278,4 +292,19 @@ let exit () =
   skip_exit();
   protect_memory_ro();
   ()
-  
+
+let new_global v =
+  if !has_exited
+  then failwith "Reactive has exited";
+  if not !has_been_initialized
+  then failwith "Reactive has not been initialized";
+  let input = input_files [| !filename |] in
+  map input (fun filename _trackers ->
+      [| filename, [| v |] |])
+
+let get_global x =
+  if !has_exited
+  then failwith "Reactive has exited";
+  if not !has_been_initialized
+  then failwith "Reactive has not been initialized";
+  (get_array x !filename).(0)
