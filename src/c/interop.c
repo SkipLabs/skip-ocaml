@@ -558,14 +558,16 @@ CAMLprim value oskip_set_file(value dirName_val, value filename) {
   CAMLparam2(dirName_val, filename);
 
   char* dirName = create_dirName(dirName_val);
+  uint64_t mtime = 0;
 
   struct stat st;
   if (stat(String_val(filename), &st) != 0) {
-    CAMLreturn(Val_int(1));
+    CAMLreturn(Val_unit);
   }
 
+  mtime = st.st_mtime;
   char* sk_filename = create_sk_string_from_ocaml(filename);
-  SKIP_ocamlSetFile(context, dirName, sk_filename, st.st_mtime);
+  SKIP_ocamlSetFile(context, dirName, sk_filename, mtime);
 
   CAMLreturn(Val_unit);
 }
