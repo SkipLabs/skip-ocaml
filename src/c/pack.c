@@ -157,10 +157,10 @@ value pack_loop(char* (*alloc)(void*, mlsize_t), void* alloc_param, value root) 
     if (tag == String_tag || tag == Double_tag || tag == Double_array_tag) {
       memcpy(block + 1, (void*)src, size * sizeof(value));
     } else {
-      if (tag != 0) {
+      if (tag >= 251) {
         free_pair_list(&stack);
         free_map(map);
-        fprintf(stderr, "Cannot pack object\n");
+        fprintf(stderr, "Cannot pack object %d\n", tag);
         exit(2);
       }
       value* fields = (void*)copy;
