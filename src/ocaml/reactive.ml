@@ -132,7 +132,7 @@ type 'a t = string
 type filename = string
 type key = string
 type tracker = int
-type 'a marshalled = string
+type 'a marshaled = string
 
 let read_file filename tracker =
   if !toplevel
@@ -176,7 +176,7 @@ let map collection f =
   skip_map collection prepare_collection map_collection dedup_collection;
   dedup_collection
 
-let marshalled_map collection f =
+let marshaled_map collection f =
   map
     collection
     (fun key values -> 
@@ -192,6 +192,7 @@ let marshalled_map collection f =
         result)
 
 let unmarshal x = Marshal.from_string x 0
+let marshal x = Marshal.to_string x [Marshal.Closures]
 
 let diff_sorted_arrays_iter
       (a : string array) (b : string array) (f : string -> unit) : unit =
@@ -230,6 +231,7 @@ let input_files file_names =
   then failwith "Reactive has exited";
   if not !has_been_initialized
   then failwith "Reactive has not been initialized";
+  Array.sort String.compare file_names;
   let input_collection = make_collection_name "input" in
   if skip_exists_input_dir input_collection = 0
   then begin
@@ -238,7 +240,6 @@ let input_files file_names =
   else begin
       let all = skip_get_files input_collection in
       check_sorted all;
-      Array.sort String.compare file_names;
       diff_sorted_arrays_iter all file_names begin fun file ->
         skip_remove_file input_collection file;
         end;
@@ -260,11 +261,6 @@ let get_array collection key =
   else skip_get_array collection key
 
 let unsafe_get_array collection key =
-  if not !has_been_initialized
-  then failwith "Reactive has not been initialized";
-  skip_unsafe_get_array collection key
-
-let dynamic_get_array collection key =
   if not !has_been_initialized
   then failwith "Reactive has not been initialized";
   if !has_exited || !toplevel
@@ -308,3 +304,9 @@ let get_global x =
   if not !has_been_initialized
   then failwith "Reactive has not been initialized";
   (get_array x !filename).(0)
+
+let unsafe_get_global x =
+  if not !has_been_initialized
+  then failwith "Reactive has not been initialized";
+  (unsafe_get_array x !filename).(0)
+
