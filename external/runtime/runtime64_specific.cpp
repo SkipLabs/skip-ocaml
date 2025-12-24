@@ -790,11 +790,6 @@ int ocaml_structural_equal(value a, value b) {
           return 0;
         }
       }
-    } else if (taga != 0 || tagb != 0) {
-      free_pair_list(&stack);
-      fprintf(stderr, "Internal error: ocaml comparison\n");
-      exit(2);
-      return 0;  // Cannot compare
     } else {
       for (mlsize_t i = 0; i < sizea; i++) {
         push_pair(&stack, (void*)Field(va, i), (void*)Field(vb, i));
